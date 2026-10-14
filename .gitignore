@@ -17,3 +17,7 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+# Generated graph files
+frames_*.gv
+frames_*.pdf
