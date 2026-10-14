@@ -1,0 +1,476 @@
+
+#!/usr/bin/env python3
+
+import math
+import threading
+import time
+from collections import deque
+
+import rclpy
+from rclpy.node import Node
+
+import tkinter as tk
+from tkinter import ttk
+
+from gas_robot_interfaces.msg import GasSensor
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Point
+
+
+class GasAlertNode(Node):
+
+    def __init__(self):
+        super().__init__('gas_alert_dashboard')
+
+        self.lock = threading.Lock()
+
+        # Gas sensor data
+        self.gas_ppm = 0.0
+        self.temperature = 0.0
+        self.humidity = 0.0
+        self.sensor_ok = False
+        self.last_sensor_time = None
+
+        # Robot odometry
+        self.robot_x = 0.0
+        self.robot_y = 0.0
+        self.heading = 0.0
+        self.odom_received = False
+
+        # Actual detected source from /danger_zone
+        self.source_x = None
+        self.source_y = None
+        self.source_detected = False
+
+        # ROS subscriptions
+        self.gas_sub = self.create_subscription(
+            GasSensor,
+            '/gas_sensor',
+            self.gas_callback,
+            10
+        )
+
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            '/odom',
+            self.odom_callback,
+            10
+        )
+
+        self.source_sub = self.create_subscription(
+            Point,
+            '/danger_zone',
+            self.source_callback,
+            10
+        )
+
+        self.get_logger().info('Gas alert dashboard node started.')
+
+    def gas_callback(self, msg):
+        with self.lock:
+            self.gas_ppm = float(msg.gas_ppm)
+            self.temperature = float(msg.temperature)
+            self.humidity = float(msg.humidity)
+            self.sensor_ok = bool(msg.sensor_ok)
+            self.last_sensor_time = time.time()
+
+        # Diagnostic log confirms sensor messages reach this node.
+        self.get_logger().info(
+            f'Dashboard received gas: {msg.gas_ppm:.2f} ppm, '
+            f'sensor_ok={msg.sensor_ok}',
+            throttle_duration_sec=2.0
+        )
+
+    def odom_callback(self, msg):
+        position = msg.pose.pose.position
+        orientation = msg.pose.pose.orientation
+
+        sin_yaw = 2.0 * (
+            orientation.w * orientation.z
+            + orientation.x * orientation.y
+        )
+        cos_yaw = 1.0 - 2.0 * (
+            orientation.y * orientation.y
+            + orientation.z * orientation.z
+        )
+
+        yaw_degrees = math.degrees(
+            math.atan2(sin_yaw, cos_yaw)
+        )
+
+        with self.lock:
+            self.robot_x = float(position.x)
+            self.robot_y = float(position.y)
+            self.heading = yaw_degrees
+            self.odom_received = True
+
+    def source_callback(self, msg):
+        with self.lock:
+            self.source_x = float(msg.x)
+            self.source_y = float(msg.y)
+            self.source_detected = True
+
+        self.get_logger().info(
+            f'Detected source coordinates: '
+            f'X={msg.x:.2f} m, Y={msg.y:.2f} m'
+        )
+
+    def get_dashboard_data(self):
+        with self.lock:
+            return {
+                'gas_ppm': self.gas_ppm,
+                'temperature': self.temperature,
+                'humidity': self.humidity,
+                'sensor_ok': self.sensor_ok,
+                'last_sensor_time': self.last_sensor_time,
+                'robot_x': self.robot_x,
+                'robot_y': self.robot_y,
+                'heading': self.heading,
+                'odom_received': self.odom_received,
+                'source_x': self.source_x,
+                'source_y': self.source_y,
+                'source_detected': self.source_detected,
+            }
+
+
+class GasAlertWindow:
+
+    def __init__(self, node):
+        self.node = node
+        self.root = tk.Tk()
+
+        self.root.title('Gas Detection Robot - Alert Dashboard')
+        self.root.geometry('780x660')
+        self.root.minsize(650, 600)
+        self.root.configure(bg='#eeeeee')
+
+        self.last_alert_status = None
+        self.history_items = deque(maxlen=100)
+
+        self.create_widgets()
+        self.root.protocol('WM_DELETE_WINDOW', self.close_window)
+        self.refresh_dashboard()
+
+    def create_widgets(self):
+        header = tk.Frame(self.root, bg='#eeeeee')
+        header.pack(fill='x', padx=15, pady=(12, 8))
+
+        tk.Label(
+            header,
+            text='GAS DETECTION MONITOR',
+            font=('Arial', 18, 'bold'),
+            bg='#eeeeee',
+            fg='#222222'
+        ).pack(anchor='w')
+
+        tk.Label(
+            header,
+            text='Live sensor readings, robot position and hazard alerts',
+            font=('Arial', 10),
+            bg='#eeeeee',
+            fg='#333333'
+        ).pack(anchor='w', pady=(5, 0))
+
+        # Status banner
+        self.status_frame = tk.Frame(
+            self.root,
+            bg='#777777',
+            padx=15,
+            pady=12
+        )
+        self.status_frame.pack(fill='x', padx=15, pady=5)
+
+        self.status_title = tk.Label(
+            self.status_frame,
+            text='WAITING FOR SENSOR',
+            font=('Arial', 17, 'bold'),
+            fg='white',
+            bg='#777777',
+            anchor='w'
+        )
+        self.status_title.pack(fill='x')
+
+        self.status_description = tk.Label(
+            self.status_frame,
+            text='Waiting for gas sensor data...',
+            font=('Arial', 10),
+            fg='white',
+            bg='#777777',
+            anchor='w',
+            wraplength=700,
+            justify='left'
+        )
+        self.status_description.pack(fill='x', pady=(8, 0))
+
+        sensor_box = ttk.LabelFrame(
+            self.root, text='Sensor Information', padding=10
+        )
+        sensor_box.pack(fill='x', padx=15, pady=5)
+
+        self.gas_label = self.add_info_row(
+            sensor_box, 0, 'Gas concentration:'
+        )
+        self.temperature_label = self.add_info_row(
+            sensor_box, 1, 'Temperature:'
+        )
+        self.humidity_label = self.add_info_row(
+            sensor_box, 2, 'Humidity:'
+        )
+        self.health_label = self.add_info_row(
+            sensor_box, 3, 'Sensor health:'
+        )
+
+        robot_box = ttk.LabelFrame(
+            self.root, text='Robot Information', padding=10
+        )
+        robot_box.pack(fill='x', padx=15, pady=5)
+
+        self.position_label = self.add_info_row(
+            robot_box, 0, 'Robot position:'
+        )
+        self.heading_label = self.add_info_row(
+            robot_box, 1, 'Heading:'
+        )
+        self.search_label = self.add_info_row(
+            robot_box, 2, 'Search status:'
+        )
+        self.source_label = self.add_info_row(
+            robot_box, 3, 'Detected source:'
+        )
+
+        history_box = ttk.LabelFrame(
+            self.root, text='Recent Alert History', padding=8
+        )
+        history_box.pack(
+            fill='both', expand=True, padx=15, pady=(5, 12)
+        )
+
+        history_frame = tk.Frame(history_box)
+        history_frame.pack(fill='both', expand=True)
+
+        scrollbar = ttk.Scrollbar(history_frame)
+        scrollbar.pack(side='right', fill='y')
+
+        self.history_list = tk.Listbox(
+            history_frame,
+            height=5,
+            font=('Courier', 9),
+            yscrollcommand=scrollbar.set
+        )
+        self.history_list.pack(
+            side='left', fill='both', expand=True
+        )
+        scrollbar.config(command=self.history_list.yview)
+
+    @staticmethod
+    def add_info_row(parent, row, title):
+        tk.Label(
+            parent,
+            text=title,
+            font=('Arial', 10, 'bold'),
+            anchor='w',
+            width=23
+        ).grid(
+            row=row, column=0, sticky='w',
+            padx=(2, 10), pady=3
+        )
+
+        value_label = tk.Label(
+            parent,
+            text='Waiting...',
+            font=('Arial', 10),
+            anchor='w'
+        )
+        value_label.grid(
+            row=row, column=1, sticky='w', pady=3
+        )
+
+        parent.columnconfigure(1, weight=1)
+        return value_label
+
+    @staticmethod
+    def determine_status(data):
+        last_sensor_time = data['last_sensor_time']
+
+        if (
+            last_sensor_time is None
+            or time.time() - last_sensor_time > 3.0
+        ):
+            return (
+                'SENSOR OFFLINE',
+                '#555555',
+                'No sensor message received for over 3 seconds.'
+            )
+
+        if not data['sensor_ok']:
+            return (
+                'SENSOR FAULT',
+                '#7b3f98',
+                'Sensor reports a fault. Check the sensor.'
+            )
+
+        gas = data['gas_ppm']
+
+        if gas >= 500:
+            return (
+                'CRITICAL - SOURCE DETECTED',
+                '#bd1717',
+                'Critical gas level! Inspect the detected area.'
+            )
+
+        if gas >= 200:
+            return (
+                'DANGER',
+                '#e56a12',
+                'High gas concentration detected.'
+            )
+
+        if gas >= 100:
+            return (
+                'WARNING',
+                '#d4a000',
+                'Elevated gas concentration detected.'
+            )
+
+        return (
+            'SAFE',
+            '#238636',
+            'Gas concentration is below the warning threshold.'
+        )
+
+    def add_history_entry(self, status, gas_ppm):
+        timestamp = time.strftime('%H:%M:%S')
+        entry = f'[{timestamp}] {status} - {gas_ppm:.1f} ppm'
+
+        self.history_items.append(entry)
+        self.history_list.delete(0, tk.END)
+
+        for item in self.history_items:
+            self.history_list.insert(tk.END, item)
+
+        self.history_list.yview_moveto(1.0)
+
+    def refresh_dashboard(self):
+        data = self.node.get_dashboard_data()
+        status, color, description = self.determine_status(data)
+
+        self.status_frame.configure(bg=color)
+        self.status_title.configure(text=status, bg=color)
+        self.status_description.configure(
+            text=description, bg=color
+        )
+
+        gas = data['gas_ppm']
+
+        if data['last_sensor_time'] is None:
+            self.gas_label.configure(text='No data')
+            self.temperature_label.configure(text='No data')
+            self.humidity_label.configure(text='No data')
+            self.health_label.configure(text='NO DATA')
+        else:
+            self.gas_label.configure(text=f'{gas:.2f} ppm')
+            self.temperature_label.configure(
+                text=f'{data["temperature"]:.2f} °C'
+            )
+            self.humidity_label.configure(
+                text=f'{data["humidity"]:.2f} %'
+            )
+            self.health_label.configure(
+                text='HEALTHY' if data['sensor_ok'] else 'FAULT'
+            )
+
+        if data['odom_received']:
+            self.position_label.configure(
+                text=(
+                    f'X = {data["robot_x"]:.2f} m, '
+                    f'Y = {data["robot_y"]:.2f} m'
+                )
+            )
+            self.heading_label.configure(
+                text=f'{data["heading"]:.1f}°'
+            )
+        else:
+            self.position_label.configure(
+                text='Waiting for odometry'
+            )
+            self.heading_label.configure(
+                text='Waiting for odometry'
+            )
+
+        if status == 'CRITICAL - SOURCE DETECTED':
+            self.search_label.configure(text='SOURCE FOUND')
+        elif status in ('DANGER', 'WARNING'):
+            self.search_label.configure(
+                text='GAS DETECTED - INVESTIGATE'
+            )
+        elif status == 'SAFE':
+            self.search_label.configure(text='SEARCHING / SAFE')
+        else:
+            self.search_label.configure(
+                text='CHECK SENSOR STATUS'
+            )
+
+        if data['source_detected']:
+            self.source_label.configure(
+                text=(
+                    f'X = {data["source_x"]:.2f} m, '
+                    f'Y = {data["source_y"]:.2f} m'
+                )
+            )
+        else:
+            self.source_label.configure(
+                text='Waiting for source position'
+            )
+
+        # Add history only when the status changes.
+        if status != self.last_alert_status:
+            self.add_history_entry(status, gas)
+            self.last_alert_status = status
+
+            # Request an audible system bell on important alerts.
+            if status in (
+                'WARNING',
+                'DANGER',
+                'CRITICAL - SOURCE DETECTED',
+                'SENSOR FAULT',
+                'SENSOR OFFLINE'
+            ):
+                try:
+                    self.root.bell()
+                except tk.TclError:
+                    pass
+
+        # Keep updating the dashboard every 250 milliseconds.
+        self.root.after(250, self.refresh_dashboard)
+
+    def close_window(self):
+        self.root.destroy()
+
+    def run(self):
+        self.root.mainloop()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = GasAlertNode()
+
+    ros_thread = threading.Thread(
+        target=rclpy.spin,
+        args=(node,),
+        daemon=True
+    )
+    ros_thread.start()
+
+    dashboard = GasAlertWindow(node)
+
+    try:
+        dashboard.run()
+    finally:
+        if rclpy.ok():
+            node.destroy_node()
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+

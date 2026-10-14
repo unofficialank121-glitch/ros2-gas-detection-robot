@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="gas_danger_zone">
+    <static>true</static>
+    <link name="link">
+      <visual name="danger_visual">
+        <geometry>
+          <cylinder>
+            <radius>0.6</radius>
+            <length>0.025</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>1 0 0 0.45</ambient>
+          <diffuse>1 0 0 0.45</diffuse>
+          <emissive>0.25 0 0 0.2</emissive>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

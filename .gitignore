@@ -1,0 +1,19 @@
+# ROS 2 build artifacts
+build/
+install/
+log/
+
+# Python generated files
+__pycache__/
+*.pyc
+*.pyo
+
+# ROS bag recordings and databases
+*.db3
+*.mcap
+*.bag
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store

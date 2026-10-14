@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="red_gas_source">
+    <static>true</static>
+
+    <link name="link">
+      <visual name="gas_cloud">
+        <geometry>
+          <sphere>
+            <radius>1.0</radius>
+          </sphere>
+        </geometry>
+
+        <material>
+          <ambient>1.0 0.1 0.0 0.25</ambient>
+          <diffuse>1.0 0.15 0.0 0.25</diffuse>
+          <emissive>0.3 0.02 0.0 0.15</emissive>
+        </material>
+
+        <transparency>0.70</transparency>
+      </visual>
+    </link>
+  </model>
+</sdf>
